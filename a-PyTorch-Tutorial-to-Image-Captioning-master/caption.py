@@ -1,62 +1,70 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-import json
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import skimage.transform
 import argparse
-from scipy.misc import imread, imresize
 from PIL import Image
+from transformers import AutoTokenizer
+from utils import read_image
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=3):
+def caption_image_beam_search(
+    encoder, decoder, image_path, tokenizer, beam_size=3
+):
     """
     Reads an image and captions it with beam search.
 
     :param encoder: encoder model
     :param decoder: decoder model
     :param image_path: path to image
-    :param word_map: word map
+    :param tokenizer: transfomers pretrained tokenizer
     :param beam_size: number of sequences to consider at each decode-step
     :return: caption, weights for visualization
     """
 
     k = beam_size
-    vocab_size = len(word_map)
+    vocab_size = tokenizer.vocab_size
 
     # Read image and process
-    img = imread(image_path)
-    if len(img.shape) == 2:
-        img = img[:, :, np.newaxis]
-        img = np.concatenate([img, img, img], axis=2)
-    img = imresize(img, (256, 256))
-    img = img.transpose(2, 0, 1)
-    img = img / 255.
+    img = read_image(image_path)
+    img = img / 255.0
     img = torch.FloatTensor(img).to(device)
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    )
     transform = transforms.Compose([normalize])
     image = transform(img)  # (3, 256, 256)
 
     # Encode
     image = image.unsqueeze(0)  # (1, 3, 256, 256)
-    encoder_out = encoder(image)  # (1, enc_image_size, enc_image_size, encoder_dim)
+    encoder_out = encoder(
+        image
+    )  # (1, enc_image_size, enc_image_size, encoder_dim)
     enc_image_size = encoder_out.size(1)
     encoder_dim = encoder_out.size(3)
 
     # Flatten encoding
-    encoder_out = encoder_out.view(1, -1, encoder_dim)  # (1, num_pixels, encoder_dim)
+    encoder_out = encoder_out.view(
+        1, -1, encoder_dim
+    )  # (1, num_pixels, encoder_dim)
     num_pixels = encoder_out.size(1)
 
     # We'll treat the problem as having a batch size of k
-    encoder_out = encoder_out.expand(k, num_pixels, encoder_dim)  # (k, num_pixels, encoder_dim)
+    # tensor를 beam_size만큼 확장한다.(Beam size만큼 추론하기 위해서!)
+    encoder_out = encoder_out.expand(
+        k, num_pixels, encoder_dim
+    )  # (k, num_pixels, encoder_dim)
 
     # Tensor to store top k previous words at each step; now they're just <start>
-    k_prev_words = torch.LongTensor([[word_map['<start>']]] * k).to(device)  # (k, 1)
+    # start token을 K개만큼 만든다.
+    k_prev_words = torch.LongTensor([[tokenizer.cls_token_id]] * k).to(
+        device
+    )  # (k, 1)
 
     # Tensor to store top k sequences; now they're just <start>
     seqs = k_prev_words  # (k, 1)
@@ -65,7 +73,10 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
 
     # Tensor to store top k sequences' alphas; now they're just 1s
-    seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size).to(device)  # (k, 1, enc_image_size, enc_image_size)
+    # alpha는 Attention Score를 뜻하는듯
+    seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size).to(
+        device
+    )  # (k, 1, enc_image_size, enc_image_size)
 
     # Lists to store completed sequences, their alphas and scores
     complete_seqs = list()
@@ -79,16 +90,26 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
     while True:
 
-        embeddings = decoder.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
+        embeddings = decoder.embedding(k_prev_words).squeeze(
+            1
+        )  # (s, embed_dim)
 
-        awe, alpha = decoder.attention(encoder_out, h)  # (s, encoder_dim), (s, num_pixels)
+        awe, alpha = decoder.attention(
+            encoder_out, h
+        )  # (s, encoder_dim), (s, num_pixels)
 
-        alpha = alpha.view(-1, enc_image_size, enc_image_size)  # (s, enc_image_size, enc_image_size)
+        alpha = alpha.view(
+            -1, enc_image_size, enc_image_size
+        )  # (s, enc_image_size, enc_image_size)
 
-        gate = decoder.sigmoid(decoder.f_beta(h))  # gating scalar, (s, encoder_dim)
+        gate = decoder.sigmoid(
+            decoder.f_beta(h)
+        )  # gating scalar, (s, encoder_dim)
         awe = gate * awe
 
-        h, c = decoder.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
+        h, c = decoder.decode_step(
+            torch.cat([embeddings, awe], dim=1), (h, c)
+        )  # (s, decoder_dim)
 
         scores = decoder.fc(h)  # (s, vocab_size)
         scores = F.log_softmax(scores, dim=1)
@@ -101,21 +122,32 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
             top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
         else:
             # Unroll and find top scores, and their unrolled indices
-            top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
+            top_k_scores, top_k_words = scores.view(-1).topk(
+                k, 0, True, True
+            )  # (s)
 
         # Convert unrolled indices to actual indices of scores
-        prev_word_inds = top_k_words / vocab_size  # (s)
+        prev_word_inds = top_k_words // vocab_size  # (s)
         next_word_inds = top_k_words % vocab_size  # (s)
 
         # Add new words to sequences, alphas
-        seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
-        seqs_alpha = torch.cat([seqs_alpha[prev_word_inds], alpha[prev_word_inds].unsqueeze(1)],
-                               dim=1)  # (s, step+1, enc_image_size, enc_image_size)
+        seqs = torch.cat(
+            [seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1
+        )  # (s, step+1)
+        seqs_alpha = torch.cat(
+            [seqs_alpha[prev_word_inds], alpha[prev_word_inds].unsqueeze(1)],
+            dim=1,
+        )  # (s, step+1, enc_image_size, enc_image_size)
 
         # Which sequences are incomplete (didn't reach <end>)?
-        incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
-                           next_word != word_map['<end>']]
-        complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
+        incomplete_inds = [
+            ind
+            for ind, next_word in enumerate(next_word_inds)
+            if next_word != tokenizer.sep_token_id
+        ]
+        complete_inds = list(
+            set(range(len(next_word_inds))) - set(incomplete_inds)
+        )
 
         # Set aside complete sequences
         if len(complete_inds) > 0:
@@ -139,7 +171,7 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         if step > 50:
             break
         step += 1
-
+    print(complete_seqs_scores)
     i = complete_seqs_scores.index(max(complete_seqs_scores))
     seq = complete_seqs[i]
     alphas = complete_seqs_alpha[i]
@@ -147,7 +179,7 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     return seq, alphas
 
 
-def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
+def visualize_att(image_path, seq, alphas, tokenizer, smooth=True):
     """
     Visualizes caption with weights at every word.
 
@@ -156,7 +188,7 @@ def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
     :param image_path: path to image that has been captioned
     :param seq: caption
     :param alphas: weights
-    :param rev_word_map: reverse word mapping, i.e. ix2word
+    :param tokenizer: transfomers pretrained tokenizer
     :param smooth: smooth weights?
     """
     image = Image.open(image_path)
@@ -167,52 +199,82 @@ def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
     for t in range(len(words)):
         if t > 50:
             break
-        plt.subplot(np.ceil(len(words) / 5.), 5, t + 1)
+        plt.subplot(np.ceil(len(words) / 5.0), 5, t + 1)
 
-        plt.text(0, 1, '%s' % (words[t]), color='black', backgroundcolor='white', fontsize=12)
+        plt.text(
+            0,
+            1,
+            "%s" % (words[t]),
+            color="black",
+            backgroundcolor="white",
+            fontsize=12,
+        )
         plt.imshow(image)
         current_alpha = alphas[t, :]
         if smooth:
-            alpha = skimage.transform.pyramid_expand(current_alpha.numpy(), upscale=24, sigma=8)
+            alpha = skimage.transform.pyramid_expand(
+                current_alpha.numpy(), upscale=24, sigma=8
+            )
         else:
-            alpha = skimage.transform.resize(current_alpha.numpy(), [14 * 24, 14 * 24])
+            alpha = skimage.transform.resize(
+                current_alpha.numpy(), [14 * 24, 14 * 24]
+            )
         if t == 0:
             plt.imshow(alpha, alpha=0)
         else:
             plt.imshow(alpha, alpha=0.8)
         plt.set_cmap(cm.Greys_r)
-        plt.axis('off')
+        plt.axis("off")
     plt.show()
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Show, Attend, and Tell - Tutorial - Generate Caption')
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Show, Attend, and Tell - Tutorial - Generate Caption"
+    )
 
-    parser.add_argument('--img', '-i', help='path to image')
-    parser.add_argument('--model', '-m', help='path to model')
-    parser.add_argument('--word_map', '-wm', help='path to word map JSON')
-    parser.add_argument('--beam_size', '-b', default=5, type=int, help='beam size for beam search')
-    parser.add_argument('--dont_smooth', dest='smooth', action='store_false', help='do not smooth alpha overlay')
+    parser.add_argument("--img", "-i", help="path to image")
+    parser.add_argument("--model", "-m", help="path to model")
+    parser.add_argument(
+        "--tokenizer_name",
+        "-wm",
+        help="tokenizer name",
+        default="monologg/kobigbird-bert-base",
+    )
+    parser.add_argument(
+        "--beam_size",
+        "-b",
+        default=3,
+        type=int,
+        help="beam size for beam search",
+    )
+    parser.add_argument(
+        "--dont_smooth",
+        dest="smooth",
+        action="store_false",
+        help="do not smooth alpha overlay",
+    )
 
     args = parser.parse_args()
 
     # Load model
     checkpoint = torch.load(args.model, map_location=str(device))
-    decoder = checkpoint['decoder']
+    decoder = checkpoint["decoder"]
     decoder = decoder.to(device)
     decoder.eval()
-    encoder = checkpoint['encoder']
+    encoder = checkpoint["encoder"]
     encoder = encoder.to(device)
     encoder.eval()
 
-    # Load word map (word2ix)
-    with open(args.word_map, 'r') as j:
-        word_map = json.load(j)
-    rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
 
     # Encode, decode with attention and beam search
-    seq, alphas = caption_image_beam_search(encoder, decoder, args.img, word_map, args.beam_size)
+    seq, alphas = caption_image_beam_search(
+        encoder, decoder, args.img, tokenizer, args.beam_size
+    )
     alphas = torch.FloatTensor(alphas)
 
+    print(seq)
+
     # Visualize caption and attention of best sequence
-    visualize_att(args.img, seq, alphas, rev_word_map, args.smooth)
+    # visualize_att(args.img, seq, alphas, tokenizer, args.smooth)

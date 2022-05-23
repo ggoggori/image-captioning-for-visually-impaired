@@ -101,6 +101,8 @@ class Attention(nn.Module):
             2
         )  # (batch_size, num_pixels)
         alpha = self.softmax(att)  # (batch_size, num_pixels)
+        # alpha는 Attention Score를 뜻하는듯
+
         attention_weighted_encoding = (encoder_out * alpha.unsqueeze(2)).sum(
             dim=1
         )  # (batch_size, encoder_dim)

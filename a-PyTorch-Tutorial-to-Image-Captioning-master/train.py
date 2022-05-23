@@ -98,6 +98,7 @@ def main():
     criterion = nn.CrossEntropyLoss().to(device)
 
     # Custom dataloaders
+    # TODO 255로 나누는 거 추가?? eval엔 추가되어있는데 왜 여긴 없지??
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     )

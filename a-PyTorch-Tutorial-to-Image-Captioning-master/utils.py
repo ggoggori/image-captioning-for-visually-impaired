@@ -1,4 +1,5 @@
 import os
+from re import I
 import numpy as np
 import h5py
 import json
@@ -123,14 +124,7 @@ def create_input_files(
                 assert len(captions) == captions_per_image
 
                 # Read images
-                img = Image.open(impaths[i])
-                img = np.array(img.resize((256, 256)))
-                if len(img.shape) == 2:
-                    img = img[:, :, np.newaxis]
-                    img = np.concatenate([img, img, img], axis=2)
-                img = img.transpose(2, 0, 1)
-                assert img.shape == (3, 256, 256)
-                assert np.max(img) <= 255
+                img = read_image(impaths[i])
 
                 # Save image to HDF5 file
                 images[i] = img
@@ -172,6 +166,19 @@ def create_input_files(
                 "w",
             ) as j:
                 json.dump(caplens, j)
+
+
+def read_image(image_path):
+    img = Image.open(image_path)
+    img = np.array(img.resize((256, 256)))
+    if len(img.shape) == 2:
+        img = img[:, :, np.newaxis]
+        img = np.concatenate([img, img, img], axis=2)
+    img = img.transpose(2, 0, 1)
+    assert img.shape == (3, 256, 256)
+    assert np.max(img) <= 255
+
+    return img
 
 
 def init_embedding(embeddings):
