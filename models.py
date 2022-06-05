@@ -14,6 +14,7 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.enc_image_size = encoded_image_size
 
+        # TODO 다른 모델로 바꿔보기
         resnet = torchvision.models.resnet101(
             pretrained=True
         )  # pretrained ImageNet ResNet-101
@@ -48,7 +49,7 @@ class Encoder(nn.Module):
         return out
 
     def fine_tune(self, fine_tune=True):
-        """
+        """d
         Allow or prevent the computation of gradients for convolutional blocks 2 through 4 of the encoder.
 
         :param fine_tune: Allow?
@@ -214,16 +215,17 @@ class DecoderWithAttention(nn.Module):
         """
 
         batch_size = encoder_out.size(0)
-        encoder_dim = encoder_out.size(-1)
+        encoder_dim = encoder_out.size(-1)  # 2048 channel
         vocab_size = self.vocab_size
 
         # Flatten image
         encoder_out = encoder_out.view(
             batch_size, -1, encoder_dim
-        )  # (batch_size, num_pixels, encoder_dim)
-        num_pixels = encoder_out.size(1)
+        )  # (batch_size, num_pixels, encoder_dim) # (batch, 14x14, 2048)일듯?
+        num_pixels = encoder_out.size(1)  # 14x14
 
         # Sort input data by decreasing lengths; why? apparent below
+        # Decoding을 수행할 때 [:batch_size_t] 이렇게 인덱싱을 함. 때문에 length 별로 정렬이 되어있어야 함.
         caption_lengths, sort_ind = caption_lengths.squeeze(1).sort(
             dim=0, descending=True
         )
@@ -243,6 +245,8 @@ class DecoderWithAttention(nn.Module):
         decode_lengths = (caption_lengths - 1).tolist()
 
         # Create tensors to hold word predicion scores and alphas
+        # vocab size만큼의 prob을 저장할 tensor를 생성.
+        # num pixel 만큼의 attention score를 저장할 tensor를 생성.
         predictions = torch.zeros(
             batch_size, max(decode_lengths), vocab_size
         ).to(device)
@@ -261,11 +265,15 @@ class DecoderWithAttention(nn.Module):
             gate = self.sigmoid(
                 self.f_beta(h[:batch_size_t])
             )  # gating scalar, (batch_size_t, encoder_dim)
+            # This is called as doubly stochastic regularization in the section 4.2.1 of the SAT paper. Quoting directly from the paper:
+            # This gating variable lets the decoder decide whether to put more emphasis on language modeling or on the context at each time step
+
             attention_weighted_encoding = gate * attention_weighted_encoding
             h, c = self.decode_step(
                 torch.cat(
                     [
                         embeddings[:batch_size_t, t, :],
+                        # caption을 항상 정답 Embedding만 넣어주기 때문에 이부분이 Teacher Forcing의 구현이 됨.
                         attention_weighted_encoding,
                     ],
                     dim=1,

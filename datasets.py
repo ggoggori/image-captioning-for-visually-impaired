@@ -22,9 +22,7 @@ class CaptionDataset(Dataset):
 
         # Open hdf5 file where images are stored
         self.h = h5py.File(
-            os.path.join(
-                data_folder, self.split + "_IMAGES_" + data_name + ".hdf5"
-            ),
+            os.path.join(data_folder, self.split + "_IMAGES_" + data_name + ".hdf5"),
             "r",
         )
         self.imgs = self.h["images"]
@@ -34,18 +32,14 @@ class CaptionDataset(Dataset):
 
         # Load encoded captions (completely into memory)
         with open(
-            os.path.join(
-                data_folder, self.split + "_CAPTIONS_" + data_name + ".json"
-            ),
+            os.path.join(data_folder, self.split + "_CAPTIONS_" + data_name + ".json"),
             "r",
         ) as j:
             self.captions = json.load(j)
 
         # Load caption lengths (completely into memory)
         with open(
-            os.path.join(
-                data_folder, self.split + "_CAPLENS_" + data_name + ".json"
-            ),
+            os.path.join(data_folder, self.split + "_CAPLENS_" + data_name + ".json"),
             "r",
         ) as j:
             self.caplens = json.load(j)
@@ -58,6 +52,7 @@ class CaptionDataset(Dataset):
 
     def __getitem__(self, i):
         # Remember, the Nth caption corresponds to the (N // captions_per_image)th image
+        # 같은 이미지로 5개의 다른 캡션으로 학습함
         img = torch.FloatTensor(self.imgs[i // self.cpi] / 255.0)
         if self.transform is not None:
             img = self.transform(img)
@@ -72,9 +67,7 @@ class CaptionDataset(Dataset):
             # For validation of testing, also return all 'captions_per_image' captions to find BLEU-4 score
             all_captions = torch.LongTensor(
                 self.captions[
-                    ((i // self.cpi) * self.cpi) : (
-                        ((i // self.cpi) * self.cpi) + self.cpi
-                    )
+                    ((i // self.cpi) * self.cpi) : (((i // self.cpi) * self.cpi) + self.cpi)
                 ]
             )
 
@@ -82,3 +75,4 @@ class CaptionDataset(Dataset):
 
     def __len__(self):
         return self.dataset_size
+            
